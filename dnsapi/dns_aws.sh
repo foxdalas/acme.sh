@@ -66,23 +66,32 @@ dns_aws_add() {
     _resource_record="$(echo "$response" | sed 's/<ResourceRecordSet>/"/g' | tr '"' "\n" | grep "<Name>$fulldomain.</Name>" | _egrep_o "<ResourceRecords.*</ResourceRecords>" | sed "s/<ResourceRecords>//" | sed "s#</ResourceRecords>##")"
     _debug "_resource_record" "$_resource_record"
 
+    # check if we have real ResourceRecords
     if [ -z "$_resource_record" ]; then
       _debug "No actual ResourceRecords found, skip deleting"
       _sleep 10
     else
       # If we have existing records, try to delete them first
       _info "Found existing TXT records, attempting to delete"
+      if [ -n "$_resource_record" ]; then
+        _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>DELETE</Action><ResourceRecordSet><ResourceRecords>$_resource_record</ResourceRecords><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
 
-      _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>DELETE</Action><ResourceRecordSet><ResourceRecords>$_resource_record</ResourceRecords><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
-
-      if ! aws_rest POST "2013-04-01$_domain_id/rrset/" "" "$_aws_tmpl_xml" || ! _contains "$response" "ChangeResourceRecordSetsResponse"; then
-        _err "Failed to delete existing record"
-        return 1
+        if ! aws_rest POST "2013-04-01$_domain_id/rrset/" "" "$_aws_tmpl_xml" || ! _contains "$response" "ChangeResourceRecordSetsResponse"; then
+          if echo "$response" | grep -q "InvalidChangeBatch" && echo "$response" | grep -q "was not found"; then
+            _info "Record not found, skipping deletion."
+          else
+            _err "Failed to delete existing record"
+            _debug "Response: $response"
+            return 1
+          fi
+        else
+          _info "Successfully deleted existing record"
+          _sleep 5
+          _resource_record=""
+        fi
+      else
+        _debug "No existing records to delete"
       fi
-
-      _info "Successfully deleted existing record"
-      _sleep 5
-      _resource_record=""
     fi
   else
     _debug "single new add"
@@ -386,7 +395,7 @@ aws_rest() {
     url="$AWS_URL/$ep?$qsr"
   fi
 
-  # Exponential backoff
+  # Exponential backoff with jitter
   max_retries=10
   attempt=1
   base_sleep=5
@@ -408,7 +417,8 @@ aws_rest() {
           _err "AWS throttling encountered, attempt $attempt"
           attempt=$(_math "$attempt" + 1)
           if [ "$attempt" -le "$max_retries" ]; then
-            sleep_time=$(_math "$base_sleep" "*" 2 "^" "$((attempt - 1))")
+            jitter=$(shuf -i 1-3 -n 1)
+            sleep_time=$(_math "$base_sleep" "*" 2 "^" "$((attempt - 1))" + "$jitter")
             _err "Sleeping $sleep_time seconds before retry..."
             _sleep "$sleep_time"
             continue
