@@ -66,19 +66,24 @@ dns_aws_add() {
     _resource_record="$(echo "$response" | sed 's/<ResourceRecordSet>/"/g' | tr '"' "\n" | grep "<Name>$fulldomain.</Name>" | _egrep_o "<ResourceRecords.*</ResourceRecords>" | sed "s/<ResourceRecords>//" | sed "s#</ResourceRecords>##")"
     _debug "_resource_record" "$_resource_record"
 
-    # If we have existing records, try to delete them first
-    _info "Found existing TXT records, attempting to delete"
+    if [ -z "$_resource_record" ]; then
+      _debug "No actual ResourceRecords found, skip deleting"
+      _sleep 10
+    else
+      # If we have existing records, try to delete them first
+      _info "Found existing TXT records, attempting to delete"
 
-    _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>DELETE</Action><ResourceRecordSet><ResourceRecords>$_resource_record</ResourceRecords><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
+      _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>DELETE</Action><ResourceRecordSet><ResourceRecords>$_resource_record</ResourceRecords><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
 
-    if ! aws_rest POST "2013-04-01$_domain_id/rrset/" "" "$_aws_tmpl_xml" || ! _contains "$response" "ChangeResourceRecordSetsResponse"; then
-      _err "Failed to delete existing record"
-      return 1
+      if ! aws_rest POST "2013-04-01$_domain_id/rrset/" "" "$_aws_tmpl_xml" || ! _contains "$response" "ChangeResourceRecordSetsResponse"; then
+        _err "Failed to delete existing record"
+        return 1
+      fi
+
+      _info "Successfully deleted existing record"
+      _sleep 5
+      _resource_record=""
     fi
-
-    _info "Successfully deleted existing record"
-    _sleep 5
-    _resource_record=""
   else
     _debug "single new add"
   fi
@@ -140,6 +145,13 @@ dns_aws_rm() {
   if _contains "$response" "<Name>$fulldomain.</Name>"; then
     _resource_record="$(echo "$response" | sed 's/<ResourceRecordSet>/"/g' | tr '"' "\n" | grep "<Name>$fulldomain.</Name>" | _egrep_o "<ResourceRecords.*</ResourceRecords>" | sed "s/<ResourceRecords>//" | sed "s#</ResourceRecords>##")"
     _debug "_resource_record" "$_resource_record"
+
+    # check if _resource_record is empty
+    if [ -z "$_resource_record" ]; then
+      _debug "No actual ResourceRecords found, skip deleting"
+      _sleep 1
+      return 0
+    fi
   else
     _debug "no records exist, skip"
     _sleep 1
