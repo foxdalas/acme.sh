@@ -65,25 +65,25 @@ dns_aws_add() {
   if _contains "$response" "<Name>$fulldomain.</Name>"; then
     _resource_record="$(echo "$response" | sed 's/<ResourceRecordSet>/"/g' | tr '"' "\n" | grep "<Name>$fulldomain.</Name>" | _egrep_o "<ResourceRecords.*</ResourceRecords>" | sed "s/<ResourceRecords>//" | sed "s#</ResourceRecords>##")"
     _debug "_resource_record" "$_resource_record"
+
+    # If we have existing records, try to delete them first
+    _info "Found existing TXT records, attempting to delete"
+
+    _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>DELETE</Action><ResourceRecordSet><ResourceRecords>$_resource_record</ResourceRecords><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
+
+    if ! aws_rest POST "2013-04-01$_domain_id/rrset/" "" "$_aws_tmpl_xml" || ! _contains "$response" "ChangeResourceRecordSetsResponse"; then
+      _err "Failed to delete existing record"
+      return 1
+    fi
+
+    _info "Successfully deleted existing record"
+    _sleep 5
+    _resource_record=""
   else
     _debug "single new add"
   fi
 
-  # If we found a conflicting record, delete it first
-  if _contains "$response" "<Code>InvalidChangeBatch</Code>" && _contains "$response" "RRSet with DNS name ${fulldomain}., type TXT cannot be created as other RRSets exist with the same name and type"; then
-    _info "Found conflicting TXT record, attempting to delete it first"
-
-    _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>DELETE</Action><ResourceRecordSet><ResourceRecords>$_resource_record</ResourceRecords><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
-
-    if aws_rest POST "2013-04-01$_domain_id/rrset/" "" "$_aws_tmpl_xml"; then
-      _info "Successfully deleted conflicting record"
-      _sleep 5
-      _resource_record=""
-    else
-      _err "Failed to delete conflicting record"
-      return 1
-    fi
-  elif [ "$_resource_record" ] && _contains "$response" "$txtvalue"; then
+  if [ "$_resource_record" ] && _contains "$response" "$txtvalue"; then
     _info "The TXT record already exists. Skipping."
     _sleep 1
     return 0
