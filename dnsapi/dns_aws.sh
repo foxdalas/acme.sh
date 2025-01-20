@@ -66,46 +66,16 @@ dns_aws_add() {
     _resource_record="$(echo "$response" | sed 's/<ResourceRecordSet>/"/g' | tr '"' "\n" | grep "<Name>$fulldomain.</Name>" | _egrep_o "<ResourceRecords.*</ResourceRecords>" | sed "s/<ResourceRecords>//" | sed "s#</ResourceRecords>##")"
     _debug "_resource_record" "$_resource_record"
 
-    # check if we have real ResourceRecords
-    if [ -z "$_resource_record" ]; then
-      _debug "No actual ResourceRecords found, skip deleting"
-      _sleep 10
-    else
-      # If we have existing records, try to delete them first
-      _info "Found existing TXT records, attempting to delete"
-      if [ -n "$_resource_record" ]; then
-        _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>DELETE</Action><ResourceRecordSet><ResourceRecords>$_resource_record</ResourceRecords><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
-
-        if ! aws_rest POST "2013-04-01$_domain_id/rrset/" "" "$_aws_tmpl_xml" || ! _contains "$response" "ChangeResourceRecordSetsResponse"; then
-          if echo "$response" | grep -q "InvalidChangeBatch" && echo "$response" | grep -q "was not found"; then
-            _info "Record not found, skipping deletion."
-          else
-            _err "Failed to delete existing record"
-            _debug "Response: $response"
-            return 1
-          fi
-        else
-          _info "Successfully deleted existing record"
-          _sleep 5
-          _resource_record=""
-        fi
-      else
-        _debug "No existing records to delete"
-      fi
+    # Проверяем, существует ли уже запись с нужным значением
+    if [ "$_resource_record" ] && _contains "$_resource_record" "\"$txtvalue\""; then
+      _info "The TXT record with the specified value already exists. No changes needed."
+      return 0
     fi
-  else
-    _debug "single new add"
   fi
 
-  if [ "$_resource_record" ] && _contains "$response" "$txtvalue"; then
-    _info "The TXT record already exists. Skipping."
-    _sleep 1
-    return 0
-  fi
-
-  _debug "Adding records"
-
-  _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>UPSERT</Action><ResourceRecordSet><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL><ResourceRecords>$_resource_record<ResourceRecord><Value>\"$txtvalue\"</Value></ResourceRecord></ResourceRecords></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
+  _debug "Adding/Updating record"
+  # Всегда используем UPSERT с новым значением
+  _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>UPSERT</Action><ResourceRecordSet><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL><ResourceRecords><ResourceRecord><Value>\"$txtvalue\"</Value></ResourceRecord></ResourceRecords></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
 
   if aws_rest POST "2013-04-01$_domain_id/rrset/" "" "$_aws_tmpl_xml" && _contains "$response" "ChangeResourceRecordSetsResponse"; then
     _info "TXT record updated successfully."
@@ -158,16 +128,20 @@ dns_aws_rm() {
     # check if _resource_record is empty
     if [ -z "$_resource_record" ]; then
       _debug "No actual ResourceRecords found, skip deleting"
-      _sleep 1
+      return 0
+    fi
+
+    # check if we have the specific value to delete
+    if ! _contains "$_resource_record" "\"$txtvalue\""; then
+      _debug "The specified TXT value not found, skip deleting"
       return 0
     fi
   else
     _debug "no records exist, skip"
-    _sleep 1
     return 0
   fi
 
-  _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>DELETE</Action><ResourceRecordSet><ResourceRecords>$_resource_record</ResourceRecords><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
+  _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>DELETE</Action><ResourceRecordSet><ResourceRecords><ResourceRecord><Value>\"$txtvalue\"</Value></ResourceRecord></ResourceRecords><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
 
   if aws_rest POST "2013-04-01$_domain_id/rrset/" "" "$_aws_tmpl_xml" && _contains "$response" "ChangeResourceRecordSetsResponse"; then
     _info "TXT record deleted successfully."
@@ -177,12 +151,13 @@ dns_aws_rm() {
     else
       _sleep 1
     fi
-
     return 0
   fi
+
   _sleep 1
   return 1
 }
+
 
 ####################  Private functions below ##################################
 
