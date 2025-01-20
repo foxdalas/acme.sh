@@ -69,7 +69,21 @@ dns_aws_add() {
     _debug "single new add"
   fi
 
-  if [ "$_resource_record" ] && _contains "$response" "$txtvalue"; then
+  # If we found a conflicting record, delete it first
+  if _contains "$response" "<Code>InvalidChangeBatch</Code>" && _contains "$response" "RRSet with DNS name ${fulldomain}., type TXT cannot be created as other RRSets exist with the same name and type"; then
+    _info "Found conflicting TXT record, attempting to delete it first"
+
+    _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>DELETE</Action><ResourceRecordSet><ResourceRecords>$_resource_record</ResourceRecords><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
+
+    if aws_rest POST "2013-04-01$_domain_id/rrset/" "" "$_aws_tmpl_xml"; then
+      _info "Successfully deleted conflicting record"
+      _sleep 5
+      _resource_record=""
+    else
+      _err "Failed to delete conflicting record"
+      return 1
+    fi
+  elif [ "$_resource_record" ] && _contains "$response" "$txtvalue"; then
     _info "The TXT record already exists. Skipping."
     _sleep 1
     return 0
@@ -87,9 +101,9 @@ dns_aws_add() {
     else
       _sleep 1
     fi
-
     return 0
   fi
+
   _sleep 1
   return 1
 }
