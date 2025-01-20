@@ -63,14 +63,27 @@ dns_aws_add() {
   fi
 
   if _contains "$response" "<Name>$fulldomain.</Name>"; then
-    _resource_record="$(echo "$response" | sed 's/<ResourceRecordSet>/"/g' | tr '"' "\n" | grep "<Name>$fulldomain.</Name>" | _egrep_o "<ResourceRecords.*</ResourceRecords>" | sed "s/<ResourceRecords>//" | sed "s#</ResourceRecords>##")"
-    _debug "_resource_record" "$_resource_record"
+      _resource_record="$(echo "$response" | sed 's/<ResourceRecordSet>/"/g' | tr '"' "\n" | grep "<Name>$fulldomain.</Name>" | _egrep_o "<ResourceRecords.*</ResourceRecords>" | sed "s/<ResourceRecords>//" | sed "s#</ResourceRecords>##")"
+      _debug "_resource_record" "$_resource_record"
 
-    # Проверяем, существует ли уже запись с нужным значением
-    if [ "$_resource_record" ] && _contains "$_resource_record" "\"$txtvalue\""; then
-      _info "The TXT record with the specified value already exists. No changes needed."
-      return 0
-    fi
+      # Проверяем, существует ли уже запись с нужным значением
+      if [ "$_resource_record" ] && _contains "$_resource_record" "\"$txtvalue\""; then
+          _info "The TXT record with the specified value already exists. No changes needed."
+          return 0
+      fi
+
+      # Если запись существует, добавляем новое значение к существующим
+      if [ -n "$_resource_record" ]; then
+          _info "Record exists, adding new value to existing ones"
+          # Сохраняем существующие записи и добавляем новую
+          _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>UPSERT</Action><ResourceRecordSet><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL><ResourceRecords>$_resource_record<ResourceRecord><Value>\"$txtvalue\"</Value></ResourceRecord></ResourceRecords></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
+
+          if aws_rest POST "2013-04-01$_domain_id/rrset/" "" "$_aws_tmpl_xml" && _contains "$response" "ChangeResourceRecordSetsResponse"; then
+              _info "TXT record updated successfully."
+              return 0
+          fi
+          return 1
+      fi
   fi
 
   _debug "Adding/Updating record"
@@ -122,26 +135,40 @@ dns_aws_rm() {
   fi
 
   if _contains "$response" "<Name>$fulldomain.</Name>"; then
-    _resource_record="$(echo "$response" | sed 's/<ResourceRecordSet>/"/g' | tr '"' "\n" | grep "<Name>$fulldomain.</Name>" | _egrep_o "<ResourceRecords.*</ResourceRecords>" | sed "s/<ResourceRecords>//" | sed "s#</ResourceRecords>##")"
-    _debug "_resource_record" "$_resource_record"
+      _resource_record="$(echo "$response" | sed 's/<ResourceRecordSet>/"/g' | tr '"' "\n" | grep "<Name>$fulldomain.</Name>" | _egrep_o "<ResourceRecords.*</ResourceRecords>" | sed "s/<ResourceRecords>//" | sed "s#</ResourceRecords>##")"
+      _debug "_resource_record" "$_resource_record"
 
-    # check if _resource_record is empty
-    if [ -z "$_resource_record" ]; then
-      _debug "No actual ResourceRecords found, skip deleting"
-      return 0
-    fi
+      # check if _resource_record is empty
+      if [ -z "$_resource_record" ]; then
+          _debug "No actual ResourceRecords found, skip deleting"
+          return 0
+      fi
 
-    # check if we have the specific value to delete
-    if ! _contains "$_resource_record" "\"$txtvalue\""; then
-      _debug "The specified TXT value not found, skip deleting"
-      return 0
-    fi
+      # check if we have the specific value to delete
+      if ! _contains "$_resource_record" "\"$txtvalue\""; then
+          _debug "The specified TXT value not found, skip deleting"
+          return 0
+      fi
+
+      # Создаем новый набор записей без удаляемой
+      _new_records=""
+      echo "$_resource_record" | sed 's/<ResourceRecord>/\n<ResourceRecord>/g' | while IFS= read -r line; do
+          if ! _contains "$line" "\"$txtvalue\""; then
+              _new_records="$_new_records$line"
+          fi
+      done
+
+      if [ -n "$_new_records" ]; then
+          # Если остались другие записи - обновляем RRSet
+          _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>UPSERT</Action><ResourceRecordSet><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL><ResourceRecords>$_new_records</ResourceRecords></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
+      else
+          # Если это была последняя запись - удаляем весь RRSet
+          _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>DELETE</Action><ResourceRecordSet><ResourceRecords>$_resource_record</ResourceRecords><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
+      fi
   else
-    _debug "no records exist, skip"
-    return 0
+      _debug "no records exist, skip"
+      return 0
   fi
-
-  _aws_tmpl_xml="<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\"><ChangeBatch><Changes><Change><Action>DELETE</Action><ResourceRecordSet><ResourceRecords><ResourceRecord><Value>\"$txtvalue\"</Value></ResourceRecord></ResourceRecords><Name>$fulldomain.</Name><Type>TXT</Type><TTL>300</TTL></ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
 
   if aws_rest POST "2013-04-01$_domain_id/rrset/" "" "$_aws_tmpl_xml" && _contains "$response" "ChangeResourceRecordSetsResponse"; then
     _info "TXT record deleted successfully."
